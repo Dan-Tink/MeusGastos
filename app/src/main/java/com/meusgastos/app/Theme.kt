@@ -41,6 +41,21 @@ private val TypePalette = listOf(
 fun typeColor(name: String): Color =
     TypePalette[(name.hashCode() and Int.MAX_VALUE) % TypePalette.size]
 
+fun paletteColor(index: Int): Color = TypePalette[index % TypePalette.size]
+
+private val CategoryColors = mapOf(
+    "Alimentação" to Color(0xFFFB923C),
+    "Transporte" to Color(0xFF60A5FA),
+    "Moradia" to Color(0xFFA78BFA),
+    "Saúde" to Color(0xFFF472B6),
+    "Lazer" to Color(0xFF34D399),
+    "Compras" to Color(0xFFFBBF24),
+    "Contas" to Color(0xFF22D3EE),
+    "Outros" to Color(0xFF94A3B8)
+)
+
+fun categoryColor(name: String): Color = CategoryColors[name] ?: typeColor(name)
+
 @Composable
 fun MeusGastosTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = Scheme, content = content)

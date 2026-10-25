@@ -2,9 +2,15 @@
 
 package com.meusgastos.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,7 +21,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -34,10 +39,9 @@ import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Tune
-import androidx.compose.material.icons.outlined.Category
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
@@ -45,9 +49,12 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -69,13 +76,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.time.Instant
 import java.time.LocalDate
@@ -85,17 +95,66 @@ import java.time.ZoneOffset
 fun HomeScreen(vm: MainViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
     val types by vm.types.collectAsStateWithLifecycle()
+    val categories by vm.categories.collectAsStateWithLifecycle()
     val month by vm.month.collectAsStateWithLifecycle()
     val filters by vm.filters.collectAsStateWithLifecycle()
     val overview by vm.overview.collectAsStateWithLifecycle()
     val monthIncomes by vm.monthIncomes.collectAsStateWithLifecycle()
+    val recurring by vm.recurring.collectAsStateWithLifecycle()
+    val history by vm.allExpenses.collectAsStateWithLifecycle()
+    val limit by vm.limitCents.collectAsStateWithLifecycle()
+    val reminderOn by vm.reminderEnabled.collectAsStateWithLifecycle()
+    val reminderHour by vm.reminderHour.collectAsStateWithLifecycle()
 
-    var showIncomes by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Expense?>(null) }
     var showNew by remember { mutableStateOf(false) }
     var showFilters by remember { mutableStateOf(false) }
     var showTypes by remember { mutableStateOf(false) }
+    var showCategories by remember { mutableStateOf(false) }
+    var showIncomes by remember { mutableStateOf(false) }
+    var showRecurring by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var pendingRestore by remember { mutableStateOf<Uri?>(null) }
+    var pendingHour by remember { mutableStateOf(21) }
+
     val context = LocalContext.current
+    fun toast(msg: String) {
+        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+    }
+
+    val csvLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv")
+    ) { uri ->
+        if (uri != null) {
+            vm.exportCsv(uri) { ok ->
+                toast(if (ok) "Planilha salva!" else "Não foi possível salvar o arquivo.")
+            }
+        }
+    }
+    val backupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri != null) {
+            vm.exportBackup(uri) { ok ->
+                toast(if (ok) "Backup salvo!" else "Não foi possível salvar o backup.")
+            }
+        }
+    }
+    val restoreLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) pendingRestore = uri
+    }
+    val notifLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            vm.setReminder(true, pendingHour)
+        } else {
+            toast("Sem permissão de notificação, o lembrete não pode ser ativado.")
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -144,14 +203,73 @@ fun HomeScreen(vm: MainViewModel) {
                     IconButton(onClick = { vm.month.value = month.plusMonths(1) }) {
                         Icon(Icons.Default.ChevronRight, contentDescription = "Próximo mês")
                     }
-                    IconButton(onClick = { showTypes = true }) {
-                        Icon(Icons.Outlined.Category, contentDescription = "Tipos de despesa")
+                    Box {
+                        IconButton(onClick = { menuOpen = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Menu")
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Tipos de despesa") },
+                                onClick = { menuOpen = false; showTypes = true }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Categorias") },
+                                onClick = { menuOpen = false; showCategories = true }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Gastos recorrentes") },
+                                onClick = { menuOpen = false; showRecurring = true }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Copiar fixos do mês anterior") },
+                                onClick = {
+                                    menuOpen = false
+                                    vm.copyFixedFromPreviousMonth { n ->
+                                        toast(
+                                            if (n > 0) "$n lançamento(s) copiado(s)."
+                                            else "Nada novo para copiar."
+                                        )
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Limite e lembrete") },
+                                onClick = { menuOpen = false; showSettings = true }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Exportar planilha (CSV)") },
+                                onClick = {
+                                    menuOpen = false
+                                    csvLauncher.launch("meus-gastos-${LocalDate.now()}.csv")
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Salvar backup") },
+                                onClick = {
+                                    menuOpen = false
+                                    backupLauncher.launch("meus-gastos-backup-${LocalDate.now()}.json")
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Restaurar backup") },
+                                onClick = {
+                                    menuOpen = false
+                                    restoreLauncher.launch(arrayOf("*/*"))
+                                }
+                            )
+                        }
                     }
                 }
             }
 
             item {
-                OverviewCard(overview, onIncomeClick = { showIncomes = true })
+                OverviewCard(
+                    o = overview,
+                    limit = limit.takeIf { it > 0 },
+                    prevLabel = month.minusMonths(1).monthName(),
+                    onIncomeClick = { showIncomes = true }
+                )
             }
 
             item {
@@ -210,10 +328,22 @@ fun HomeScreen(vm: MainViewModel) {
         ExpenseSheet(
             initial = null,
             types = types,
+            categories = categories,
+            history = history,
+            lastType = vm.lastType,
+            lastCategory = vm.lastCategory,
             onDismiss = { showNew = false },
-            onSave = { vm.save(it); showNew = false },
+            onSave = { e, installments, keepOpen ->
+                vm.save(e, installments)
+                if (keepOpen) {
+                    toast("Gasto salvo!")
+                } else {
+                    showNew = false
+                }
+            },
             onDelete = {},
-            onManageTypes = { showTypes = true }
+            onManageTypes = { showTypes = true },
+            onManageCategories = { showCategories = true }
         )
     }
 
@@ -221,10 +351,21 @@ fun HomeScreen(vm: MainViewModel) {
         ExpenseSheet(
             initial = current,
             types = types,
+            categories = categories,
+            history = history,
+            lastType = vm.lastType,
+            lastCategory = vm.lastCategory,
             onDismiss = { editing = null },
-            onSave = { vm.save(it); editing = null },
-            onDelete = { vm.delete(it); editing = null },
-            onManageTypes = { showTypes = true }
+            onSave = { e, _, _ ->
+                vm.save(e, 1)
+                editing = null
+            },
+            onDelete = {
+                vm.delete(it)
+                editing = null
+            },
+            onManageTypes = { showTypes = true },
+            onManageCategories = { showCategories = true }
         )
     }
 
@@ -232,7 +373,11 @@ fun HomeScreen(vm: MainViewModel) {
         FiltersSheet(
             filters = filters,
             types = types,
-            onApply = { vm.applyFilters(it); showFilters = false },
+            categories = categories,
+            onApply = {
+                vm.applyFilters(it)
+                showFilters = false
+            },
             onDismiss = { showFilters = false }
         )
     }
@@ -247,6 +392,17 @@ fun HomeScreen(vm: MainViewModel) {
         )
     }
 
+    if (showRecurring) {
+        RecurringSheet(
+            recurring = recurring,
+            types = types,
+            categories = categories,
+            onSave = { vm.saveRecurring(it) },
+            onDelete = { vm.deleteRecurring(it) },
+            onDismiss = { showRecurring = false }
+        )
+    }
+
     if (showTypes) {
         TypesDialog(
             types = types,
@@ -255,22 +411,72 @@ fun HomeScreen(vm: MainViewModel) {
             onToggleFixed = { name, fixed -> vm.setTypeFixed(name, fixed) },
             onDelete = { name ->
                 vm.deleteType(name) { ok ->
-                    if (!ok) {
-                        Toast.makeText(
-                            context,
-                            "Esse tipo tem gastos. Mude-os de tipo antes de excluir.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    }
+                    if (!ok) toast("Esse tipo está em uso. Mude os gastos de tipo antes de excluir.")
                 }
             },
             onDismiss = { showTypes = false }
+        )
+    }
+
+    if (showCategories) {
+        CategoriesDialog(
+            categories = categories,
+            onAdd = { vm.addCategory(it) },
+            onRename = { old, new -> vm.renameCategory(old, new) },
+            onDelete = { name ->
+                vm.deleteCategory(name) { ok ->
+                    if (!ok) toast("Essa categoria está em uso. Mude os gastos de categoria antes de excluir.")
+                }
+            },
+            onDismiss = { showCategories = false }
+        )
+    }
+
+    if (showSettings) {
+        SettingsDialog(
+            limitCents = limit,
+            reminderEnabled = reminderOn,
+            reminderHour = reminderHour,
+            onSaveLimit = { vm.setLimit(it) },
+            onSetReminder = { enabled, hour ->
+                val needsPermission = enabled &&
+                    Build.VERSION.SDK_INT >= 33 &&
+                    ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.POST_NOTIFICATIONS
+                    ) != PackageManager.PERMISSION_GRANTED
+                if (needsPermission) {
+                    pendingHour = hour
+                    notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    vm.setReminder(enabled, hour)
+                }
+            },
+            onDismiss = { showSettings = false }
+        )
+    }
+
+    pendingRestore?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { pendingRestore = null },
+            title = { Text("Restaurar backup?") },
+            text = { Text("Isso substitui todos os dados atuais pelos do arquivo escolhido.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRestore = null
+                    vm.restoreBackup(uri) { ok ->
+                        toast(if (ok) "Backup restaurado!" else "Arquivo de backup inválido.")
+                    }
+                }) { Text("Restaurar", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { pendingRestore = null }) { Text("Cancelar") } }
         )
     }
 }
 
 @Composable
 private fun SummaryCard(state: UiState) {
+    var byCategory by remember { mutableStateOf(false) }
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -292,30 +498,99 @@ private fun SummaryCard(state: UiState) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            if (state.byType.isNotEmpty() && state.total > 0) {
-                Spacer(Modifier.height(6.dp))
-                state.byType.forEach { (name, value) ->
-                    val color = typeColor(name)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(color)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                        Text(name, modifier = Modifier.weight(1f))
-                        Text(value.toMoney(), fontWeight = FontWeight.SemiBold)
-                    }
-                    LinearProgressIndicator(
-                        progress = { value.toFloat() / state.total.toFloat() },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp)),
-                        color = color,
-                        trackColor = MaterialTheme.colorScheme.outline
+            if (state.total > 0) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = !byCategory,
+                        onClick = { byCategory = false },
+                        label = { Text("Por tipo") }
                     )
+                    FilterChip(
+                        selected = byCategory,
+                        onClick = { byCategory = true },
+                        label = { Text("Por categoria") }
+                    )
+                }
+                if (byCategory) {
+                    CategoryDonut(state.byCategory, state.total)
+                } else {
+                    state.byType.forEach { (name, value) ->
+                        val color = typeColor(name)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(color)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(name, modifier = Modifier.weight(1f))
+                            Text(value.toMoney(), fontWeight = FontWeight.SemiBold)
+                        }
+                        LinearProgressIndicator(
+                            progress = { value.toFloat() / state.total.toFloat() },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(6.dp)
+                                .clip(RoundedCornerShape(3.dp)),
+                            color = color,
+                            trackColor = MaterialTheme.colorScheme.outline
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CategoryDonut(data: List<Pair<String, Long>>, total: Long) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Canvas(Modifier.size(120.dp)) {
+            val strokeWidth = size.minDimension * 0.2f
+            val diameter = size.minDimension - strokeWidth
+            val topLeft = Offset((size.width - diameter) / 2f, (size.height - diameter) / 2f)
+            var start = -90f
+            data.forEach { (name, value) ->
+                val sweep = 360f * value.toFloat() / total.toFloat()
+                drawArc(
+                    color = categoryColor(name),
+                    startAngle = start,
+                    sweepAngle = sweep,
+                    useCenter = false,
+                    topLeft = topLeft,
+                    size = Size(diameter, diameter),
+                    style = Stroke(width = strokeWidth)
+                )
+                start += sweep
+            }
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            data.forEach { (name, value) ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(categoryColor(name))
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            "$name · ${value * 100 / total}%",
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            value.toMoney(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }
@@ -359,9 +634,11 @@ private fun ExpenseRow(e: Expense, onClick: () -> Unit) {
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    "${e.type} • ${date.fmt()}",
+                    "${e.type} • ${e.category} • ${date.fmt()}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
             Spacer(Modifier.width(8.dp))
@@ -396,18 +673,38 @@ fun PickDate(initial: LocalDate?, onPick: (LocalDate) -> Unit, onDismiss: () -> 
 private fun ExpenseSheet(
     initial: Expense?,
     types: List<ExpenseType>,
+    categories: List<Category>,
+    history: List<Expense>,
+    lastType: String,
+    lastCategory: String,
     onDismiss: () -> Unit,
-    onSave: (Expense) -> Unit,
+    onSave: (Expense, Int, Boolean) -> Unit,
     onDelete: (Expense) -> Unit,
-    onManageTypes: () -> Unit
+    onManageTypes: () -> Unit,
+    onManageCategories: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-    var type by remember { mutableStateOf(initial?.type ?: types.firstOrNull()?.name ?: "") }
+    var type by remember {
+        mutableStateOf(
+            initial?.type
+                ?: lastType.takeIf { lt -> types.any { it.name == lt } }
+                ?: types.firstOrNull()?.name
+                ?: ""
+        )
+    }
+    var category by remember {
+        mutableStateOf(
+            initial?.category
+                ?: lastCategory.takeIf { lc -> categories.any { it.name == lc } }
+                ?: "Outros"
+        )
+    }
     var desc by remember { mutableStateOf(initial?.description ?: "") }
     var amount by remember { mutableStateOf(initial?.amountCents?.toPlain() ?: "") }
     var date by remember {
         mutableStateOf(initial?.let { LocalDate.ofEpochDay(it.epochDay) } ?: LocalDate.now())
     }
+    var instText by remember { mutableStateOf("1") }
     var pickDate by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
@@ -416,7 +713,35 @@ private fun ExpenseSheet(
     }
 
     val cents = parseCents(amount)
-    val valid = type.isNotBlank() && desc.isNotBlank() && cents != null
+    val installments = (instText.toIntOrNull() ?: 1).coerceIn(1, 60)
+    val valid = type.isNotBlank() && desc.isNotBlank() && cents != null && cents >= installments
+
+    // Sugestões: descrições já usadas antes, da mais recente para a mais antiga.
+    val suggestions = remember(desc, history) {
+        val q = desc.trim().lowercase()
+        if (initial != null || q.isEmpty()) {
+            emptyList()
+        } else {
+            history.asSequence()
+                .map { it to it.description.replace(InstallmentRegex, "") }
+                .filter { (_, d) ->
+                    d.lowercase().contains(q) && !d.equals(desc.trim(), ignoreCase = true)
+                }
+                .distinctBy { (_, d) -> d.lowercase() }
+                .take(4)
+                .map { (e, d) -> e.copy(description = d) }
+                .toList()
+        }
+    }
+
+    fun buildExpense() = Expense(
+        id = initial?.id ?: 0L,
+        type = type,
+        description = desc.trim(),
+        amountCents = cents ?: 0L,
+        epochDay = date.toEpochDay(),
+        category = category
+    )
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -455,6 +780,26 @@ private fun ExpenseSheet(
                 }
                 AssistChip(onClick = onManageTypes, label = { Text("+ Tipo") })
             }
+
+            Text(
+                "Categoria",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                categories.forEach { c ->
+                    FilterChip(
+                        selected = category == c.name,
+                        onClick = { category = c.name },
+                        label = { Text(c.name) }
+                    )
+                }
+                AssistChip(onClick = onManageCategories, label = { Text("+ Categoria") })
+            }
+
             OutlinedTextField(
                 value = desc,
                 onValueChange = { desc = it },
@@ -464,44 +809,109 @@ private fun ExpenseSheet(
                 singleLine = true,
                 shape = RoundedCornerShape(14.dp)
             )
+            if (suggestions.isNotEmpty()) {
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    suggestions.forEach { s ->
+                        AssistChip(
+                            onClick = {
+                                desc = s.description
+                                if (types.any { it.name == s.type }) type = s.type
+                                if (categories.any { it.name == s.category }) category = s.category
+                                if (amount.isBlank()) amount = s.amountCents.toPlain()
+                            },
+                            label = { Text(s.description) }
+                        )
+                    }
+                }
+            }
             OutlinedTextField(
                 value = amount,
                 onValueChange = { amount = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("Valor") },
+                label = { Text(if (initial == null && installments > 1) "Valor total" else "Valor") },
                 placeholder = { Text("4,50") },
                 prefix = { Text("R$ ") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 shape = RoundedCornerShape(14.dp)
             )
-            OutlinedButton(
-                onClick = { pickDate = true },
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Icon(Icons.Default.CalendarMonth, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text(date.fmt())
+
+            if (initial == null) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    OutlinedTextField(
+                        value = instText,
+                        onValueChange = { instText = it.filter(Char::isDigit).take(2) },
+                        modifier = Modifier.width(110.dp),
+                        label = { Text("Parcelas") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        shape = RoundedCornerShape(14.dp)
+                    )
+                    OutlinedButton(
+                        onClick = { pickDate = true },
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Default.CalendarMonth, contentDescription = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text(date.fmt())
+                    }
+                }
+                if (installments > 1 && cents != null) {
+                    Text(
+                        "${installments}x de ${(cents / installments).toMoney()}. " +
+                            "O valor acima é o total da compra; cada parcela cai em um mês.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                OutlinedButton(
+                    onClick = { pickDate = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp)
+                ) {
+                    Icon(Icons.Default.CalendarMonth, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(date.fmt())
+                }
             }
+
             Button(
                 onClick = {
-                    onSave(
-                        Expense(
-                            id = initial?.id ?: 0L,
-                            type = type,
-                            description = desc.trim(),
-                            amountCents = cents ?: 0L,
-                            epochDay = date.toEpochDay()
-                        )
-                    )
+                    onSave(buildExpense(), if (initial == null) installments else 1, false)
                 },
                 enabled = valid,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(52.dp),
                 shape = RoundedCornerShape(14.dp)
-            ) { Text("Salvar") }
+            ) { Text(if (initial == null && installments > 1) "Salvar parcelado" else "Salvar") }
+
+            if (initial == null) {
+                OutlinedButton(
+                    onClick = {
+                        onSave(buildExpense(), installments, true)
+                        desc = ""
+                        amount = ""
+                        instText = "1"
+                    },
+                    enabled = valid,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp),
+                    shape = RoundedCornerShape(14.dp)
+                ) { Text("Salvar e adicionar outro") }
+            }
+
             if (initial != null) {
                 TextButton(
                     onClick = { confirmDelete = true },
@@ -529,7 +939,10 @@ private fun ExpenseSheet(
             title = { Text("Excluir gasto?") },
             text = { Text("\"${initial.description}\" será removido.") },
             confirmButton = {
-                TextButton(onClick = { confirmDelete = false; onDelete(initial) }) {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    onDelete(initial)
+                }) {
                     Text("Excluir", color = MaterialTheme.colorScheme.error)
                 }
             },
@@ -542,11 +955,13 @@ private fun ExpenseSheet(
 private fun FiltersSheet(
     filters: Filters,
     types: List<ExpenseType>,
+    categories: List<Category>,
     onApply: (Filters) -> Unit,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var selTypes by remember { mutableStateOf(filters.types) }
+    var selCategories by remember { mutableStateOf(filters.categories) }
     var minText by remember { mutableStateOf(filters.minCents?.toPlain() ?: "") }
     var maxText by remember { mutableStateOf(filters.maxCents?.toPlain() ?: "") }
     var from by remember { mutableStateOf(filters.from) }
@@ -591,6 +1006,28 @@ private fun FiltersSheet(
                             selTypes = if (t.name in selTypes) selTypes - t.name else selTypes + t.name
                         },
                         label = { Text(t.name) }
+                    )
+                }
+            }
+
+            Text(
+                "Categoria",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                categories.forEach { c ->
+                    FilterChip(
+                        selected = c.name in selCategories,
+                        onClick = {
+                            selCategories =
+                                if (c.name in selCategories) selCategories - c.name
+                                else selCategories + c.name
+                        },
+                        label = { Text(c.name) }
                     )
                 }
             }
@@ -675,6 +1112,7 @@ private fun FiltersSheet(
                         onApply(
                             filters.copy(
                                 types = selTypes,
+                                categories = selCategories,
                                 minCents = parseCents(minText),
                                 maxCents = parseCents(maxText),
                                 from = from,
@@ -694,84 +1132,4 @@ private fun FiltersSheet(
 
     if (pickFrom) PickDate(from, onPick = { from = it }, onDismiss = { pickFrom = false })
     if (pickTo) PickDate(to, onPick = { to = it }, onDismiss = { pickTo = false })
-}
-
-@Composable
-private fun TypesDialog(
-    types: List<ExpenseType>,
-    onAdd: (String) -> Unit,
-    onRename: (String, String) -> Unit,
-    onToggleFixed: (String, Boolean) -> Unit,
-    onDelete: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
-    var input by remember { mutableStateOf("") }
-    var renaming by remember { mutableStateOf<String?>(null) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Tipos de despesa") },
-        text = {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                types.forEach { t ->
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(typeColor(t.name))
-                        )
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(t.name)
-                            Text(
-                                if (t.fixed) "Fixo (toque p/ alternar)" else "Variável (toque p/ alternar)",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .clickable { onToggleFixed(t.name, !t.fixed) }
-                                    .padding(vertical = 4.dp)
-                            )
-                        }
-                        IconButton(onClick = { renaming = t.name; input = t.name }) {
-                            Icon(Icons.Default.Edit, contentDescription = "Renomear")
-                        }
-                        IconButton(onClick = { onDelete(t.name) }) {
-                            Icon(
-                                Icons.Default.Delete,
-                                contentDescription = "Excluir",
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                        }
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = input,
-                    onValueChange = { input = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text(if (renaming != null) "Novo nome" else "Novo tipo") },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp)
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = input.isNotBlank(),
-                onClick = {
-                    val r = renaming
-                    if (r != null) onRename(r, input) else onAdd(input)
-                    input = ""
-                    renaming = null
-                }
-            ) { Text(if (renaming != null) "Salvar" else "Adicionar") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Fechar") } }
-    )
 }

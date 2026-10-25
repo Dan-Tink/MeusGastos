@@ -2,6 +2,7 @@ package com.meusgastos.app
 
 import java.math.BigDecimal
 import java.math.RoundingMode
+import java.text.Normalizer
 import java.text.NumberFormat
 import java.time.LocalDate
 import java.time.YearMonth
@@ -27,5 +28,17 @@ fun parseCents(input: String): Long? {
 
 fun LocalDate.fmt(): String = format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))
 
-fun YearMonth.label(): String =
-    month.getDisplayName(TextStyle.FULL, PtBR).replaceFirstChar { it.uppercase() } + " " + year
+fun YearMonth.monthName(): String = month.getDisplayName(TextStyle.FULL, PtBR)
+
+/** Reconhece o sufixo de parcela, como " (2/6)". */
+val InstallmentRegex = Regex("\\s*\\(\\d+/\\d+\\)$")
+
+fun YearMonth.label(): String = monthName().replaceFirstChar { it.uppercase() } + " " + year
+
+fun YearMonth.monthIndex(): Int = year * 12 + (monthValue - 1)
+
+fun monthFromIndex(index: Int): YearMonth = YearMonth.of(index / 12, index % 12 + 1)
+
+/** Minúsculas e sem acentos, para buscas. */
+fun String.norm(): String =
+    Normalizer.normalize(lowercase(), Normalizer.Form.NFD).replace(Regex("\\p{Mn}+"), "")

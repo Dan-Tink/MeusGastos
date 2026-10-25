@@ -55,21 +55,34 @@ private val AmberColor = Color(0xFFFBBF24)
 private val VioletColor = Color(0xFFA78BFA)
 
 @Composable
-fun OverviewCard(o: Overview, onIncomeClick: () -> Unit) {
-    val spent = o.fixed + o.variable
-    val ratio = when {
-        o.income > 0 -> (spent.toFloat() / o.income.toFloat()).coerceIn(0f, 1f)
-        spent > 0 -> 1f
-        else -> 0f
-    }
+fun OverviewCard(
+    o: Overview,
+    limit: Long?,
+    prevLabel: String,
+    onIncomeClick: () -> Unit
+) {
+    val spent = o.spent
     val over = o.balance < 0
     val balanceColor = if (over) MaterialTheme.colorScheme.error else GreenColor
+
+    // Referência da barra: o limite definido ou, na falta dele, os ganhos do mês.
+    val reference: Long? = limit ?: o.income.takeIf { it > 0 }
+    val pct: Long = if (reference != null && reference > 0) spent * 100 / reference else 0
+    val ratio = if (reference != null && reference > 0) {
+        (spent.toFloat() / reference.toFloat()).coerceIn(0f, 1f)
+    } else 0f
+    val barColor = when {
+        limit != null && pct >= 100 -> MaterialTheme.colorScheme.error
+        limit != null && pct >= 80 -> AmberColor
+        limit == null && spent > o.income -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.primary
+    }
 
     Card(
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(Modifier.fillMaxWidth()) {
                 Tile("Ganhos", o.income, GreenColor, Modifier.weight(1f), onClick = onIncomeClick)
                 Tile("Gastos fixos", o.fixed, AmberColor, Modifier.weight(1f))
@@ -78,22 +91,49 @@ fun OverviewCard(o: Overview, onIncomeClick: () -> Unit) {
                 Tile("Gastos variáveis", o.variable, VioletColor, Modifier.weight(1f))
                 Tile("Saldo", o.balance, balanceColor, Modifier.weight(1f))
             }
-            LinearProgressIndicator(
-                progress = { ratio },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp)),
-                color = if (over || ratio >= 1f) MaterialTheme.colorScheme.error
-                else MaterialTheme.colorScheme.primary,
-                trackColor = MaterialTheme.colorScheme.outline
-            )
+
+            if (reference != null) {
+                LinearProgressIndicator(
+                    progress = { ratio },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp)),
+                    color = barColor,
+                    trackColor = MaterialTheme.colorScheme.outline
+                )
+            }
+
+            val barText = when {
+                limit != null -> {
+                    val alert = when {
+                        pct >= 100 -> " — limite estourado!"
+                        pct >= 80 -> " — atenção!"
+                        else -> ""
+                    }
+                    "$pct% do limite de ${limit.toMoney()}$alert"
+                }
+                o.income > 0 -> "$pct% dos ganhos já foram gastos"
+                else -> "Toque em Ganhos para lançar seu salário e acompanhar o saldo"
+            }
             Text(
-                if (o.income > 0) "${spent * 100 / o.income}% dos ganhos já foram gastos"
-                else "Toque em Ganhos para lançar seu salário e acompanhar o saldo",
+                barText,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (limit != null && pct >= 80) barColor
+                else MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            if (o.prevSpent > 0 && spent > 0) {
+                val diff = (spent - o.prevSpent) * 100 / o.prevSpent
+                val period = o.prevUpToDay?.let { " (até o dia $it)" } ?: ""
+                val (text, color) = when {
+                    diff > 0 -> "Você gastou $diff% a mais que em $prevLabel$period" to AmberColor
+                    diff < 0 -> "Você gastou ${-diff}% a menos que em $prevLabel$period" to GreenColor
+                    else -> "Mesmo gasto de $prevLabel$period" to
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                }
+                Text(text, style = MaterialTheme.typography.labelSmall, color = color)
+            }
         }
     }
 }
